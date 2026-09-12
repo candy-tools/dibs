@@ -36,3 +36,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # cross-repo PAT so goreleaser can push the cask to candy-tools/homebrew-tap
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Register .deb with debian-repo
+        # writes packages/dibs.json to candy-tools/debian-repo, which triggers a
+        # publish. reads the .deb files goreleaser wrote to dist/ (nfpms above);
+        # sha256/version/arch are derived from them. needs a cross-repo PAT that
+        # can push to debian-repo — see DEBIAN_REPO_TOKEN below.
+        uses: candy-tools/debian-repo/.github/actions/register@main
+        with:
+          name: dibs          # must match the .deb's Package field (nfpms.package_name)
+          dist-dir: dist      # where goreleaser writes the .deb files
+          token: ${{ secrets.DEBIAN_REPO_TOKEN }}
