@@ -37,13 +37,31 @@ jobs:
           # cross-repo PAT so goreleaser can push the cask to candy-tools/homebrew-tap
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-      - name: Register .deb with debian-repo
-        # writes packages/dibs.json to candy-tools/debian-repo, which triggers a
-        # publish. reads the .deb files goreleaser wrote to dist/ (nfpms above);
-        # sha256/version/arch are derived from them. needs a cross-repo PAT that
-        # can push to debian-repo — see DEBIAN_REPO_TOKEN below.
-        uses: candy-tools/debian-repo/.github/actions/register@main
+      - name: Upload the .debs for the APT repo
+        # hands the .deb files goreleaser wrote to dist/ (nfpms above) to the apt
+        # job below. only the .debs: dist/ also holds the binaries and archives,
+        # and a flat artifact means "every release" of the APT repo.
+        uses: actions/upload-artifact@v4
         with:
-          name: dibs          # must match the .deb's Package field (nfpms.package_name)
-          dist-dir: dist      # where goreleaser writes the .deb files
-          token: ${{ secrets.DEBIAN_REPO_TOKEN }}
+          name: debs
+          path: dist/*.deb
+          if-no-files-found: error
+
+  # writes packages/dibs.json to candy-tools/debian-repo, which triggers a
+  # publish, through the gh-action-debian-repo engine; sha256/version/arch are
+  # derived from the uploaded .debs, and checked against the release assets
+  # before the push. authenticates as the candy-tools GitHub App (org variable
+  # APT_APP_ID + secret APT_APP_PRIVATE_KEY), which mints a short-lived token
+  # scoped to debian-repo.
+  apt:
+    needs: release
+    permissions:
+      contents: read
+    uses: andresbott/gh-action-debian-repo/.github/workflows/publish.yml@v1.0.0-rc.2
+    with:
+      name: dibs          # must match the .deb's Package field (nfpms.package_name)
+      artifact: debs
+      collection: candy-tools/debian-repo
+      app-id: ${{ vars.APT_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.APT_APP_PRIVATE_KEY }}
