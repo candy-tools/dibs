@@ -118,6 +118,14 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	return writeFileAtomic(path, data)
+}
+
+// writeFileAtomic writes data to path through a temp file renamed into place,
+// creating parent directories mode 0700. The result is always a fresh mode 0600
+// file: one already at path is replaced rather than rewritten, so it never keeps
+// looser permissions it had.
+func writeFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

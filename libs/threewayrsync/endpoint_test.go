@@ -77,6 +77,8 @@ func TestValidate(t *testing.T) {
 		"daemon no module":        {local, Endpoint{Daemon: &Daemon{Host: "h"}}, true},
 		"daemon dash host":        {local, Endpoint{Daemon: &Daemon{Host: "-h", Module: "m"}}, true},
 		"daemon dash password":    {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m", PasswordFile: "-x"}}, true},
+		"daemon password space":   {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m", PasswordFile: "/Users/u/Library/Application Support/dibs/a.pw"}}, false},
+		"daemon password newline": {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m", PasswordFile: "/pw\nx"}}, true},
 		"daemon slash in module":  {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m/sub"}}, true},
 		"daemon colon in host":    {local, Endpoint{Daemon: &Daemon{Host: "h:1", Module: "m"}}, true},
 		"daemon space in module":  {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m x"}}, true},

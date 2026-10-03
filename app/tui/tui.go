@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
@@ -1590,6 +1591,9 @@ func (m model) applyServerCheckResult(res serverCheckResultMsg) (tea.Model, tea.
 	m.serverForm.checking = false
 	if res.err != nil {
 		m.serverForm.err = "connection check failed: " + res.err.Error()
+		if errors.Is(res.err, fs.ErrNotExist) {
+			m.serverForm.err += " (type the password to create it)"
+		}
 		return m, nil
 	}
 	return m.finalizeServerSave()
@@ -1603,30 +1607,38 @@ func (m model) finalizeServerSave() (tea.Model, tea.Cmd) {
 	name, srv := m.serverForm.values()
 	origName := m.serverForm.origName
 
-	// Resolve the password file. srv.PasswordFile is the path-field value; a
-	// typed password is written to it (or, if the field is blank, to the default
-	// managed location for this name). A managed file follows a rename.
+	// Resolve the password file (see passFileTarget). A typed password is written
+	// to the target, replacing a stale managed file at the old location. Without
+	// one, a changed location carries the existing file over — copied instead of
+	// moved while another entry still uses the old path. undo reverses a move if
+	// the config save below fails.
 	password := m.serverForm.password()
-	finalPath := srv.PasswordFile
-	if origName != "" && origName != name {
-		oldManaged := config.ServerPasswordPath(m.path, origName)
-		if finalPath == oldManaged && m.cfg.Servers[origName].PasswordFile == oldManaged {
-			newManaged := config.ServerPasswordPath(m.path, name)
-			if password == "" {
-				_ = os.Rename(oldManaged, newManaged) // best-effort: follow the rename
-			} else {
-				_ = os.Remove(oldManaged) // stale; the new secret is written below
-			}
-			finalPath = newManaged
-		}
-	}
-	if password != "" {
-		if finalPath == "" {
-			finalPath = config.ServerPasswordPath(m.path, name)
-		}
-		if err := config.WriteServerPassword(finalPath, password); err != nil {
+	oldPath := m.serverForm.origPassFile
+	finalPath := m.serverForm.passFileTarget()
+	shared := oldPath != "" && passFileInUse(m.cfg, origName, oldPath)
+	undo := func() {}
+	switch {
+	case password != "":
+		if err := config.WriteServerPassword(config.ExpandRoot(finalPath), password); err != nil {
 			m.serverForm.err = "write password file: " + err.Error()
 			return m, nil
+		}
+		if oldPath != "" && oldPath != finalPath && !shared &&
+			oldPath == config.ServerPasswordPath(m.path, origName) {
+			_ = os.Remove(config.ExpandRoot(oldPath)) // best-effort: stale managed secret
+		}
+	case m.serverForm.movesPassFile(finalPath):
+		from, to := config.ExpandRoot(oldPath), config.ExpandRoot(finalPath)
+		if err := config.MovePasswordFile(from, to, shared); err != nil {
+			m.serverForm.err = "move password file: " + err.Error()
+			return m, nil
+		}
+		undo = func() {
+			if shared {
+				_ = os.Remove(to)
+			} else {
+				_ = config.MovePasswordFile(to, from, false)
+			}
 		}
 	}
 	srv.PasswordFile = finalPath
@@ -1642,6 +1654,7 @@ func (m model) finalizeServerSave() (tea.Model, tea.Cmd) {
 	m.cfg.Servers[name] = srv
 
 	if err := commitServers(m.path, m.cfg, prev); err != nil {
+		undo()
 		m.serverForm.err = "save failed: " + err.Error()
 		return m, nil
 	}

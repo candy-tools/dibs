@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,12 +22,13 @@ import (
 // written to the Password file (see finalizeServerSave); the field itself is
 // never persisted — only the file path lives in the config.
 type serverFormModel struct {
-	inputs     []textinput.Model
-	focus      int
-	err        string
-	width      int
-	origName   string // the original name when editing (empty when adding)
-	configPath string // config file path, used to derive the default password-file location
+	inputs       []textinput.Model
+	focus        int
+	err          string
+	width        int
+	origName     string // the original name when editing (empty when adding)
+	origPassFile string // the server's saved password-file path when editing (may be empty)
+	configPath   string // config file path, used to derive the default password-file location
 
 	// Connection-check state (see servercheck.go). On Save the form probes the
 	// server before persisting; checking is true while that probe is in flight,
@@ -86,7 +88,7 @@ func newServerForm(origName string, srv config.Server, configPath string) server
 	inputs[srvUser].Placeholder = "none"
 	inputs[srvPassword].Placeholder = "none"
 
-	s := serverFormModel{inputs: inputs, origName: origName, configPath: configPath}
+	s := serverFormModel{inputs: inputs, origName: origName, origPassFile: srv.PasswordFile, configPath: configPath}
 	s.refreshPassFilePlaceholder()
 	if len(s.inputs) > 0 {
 		s.inputs[0].Focus()
@@ -105,12 +107,42 @@ func (s serverFormModel) password() string {
 	return v
 }
 
+// passFileTarget is the password-file path the config will hold after save: the
+// Password file field, except that a managed file left untouched across a
+// rename follows the new name, and a typed password with a blank field goes to
+// the default managed location. "" means the server uses no password file.
+func (s serverFormModel) passFileTarget() string {
+	name, srv := s.values()
+	path := srv.PasswordFile
+	if s.origName != "" && s.origName != name {
+		oldManaged := config.ServerPasswordPath(s.configPath, s.origName)
+		if path == oldManaged && s.origPassFile == oldManaged {
+			return config.ServerPasswordPath(s.configPath, name)
+		}
+	}
+	if path == "" && s.password() != "" {
+		return config.ServerPasswordPath(s.configPath, name)
+	}
+	return path
+}
+
+// movesPassFile reports whether saving carries the existing password file over
+// to target: no new secret was typed, the location changed, and nothing is at
+// target yet (an existing file there is the user's pick and is used as-is).
+func (s serverFormModel) movesPassFile(target string) bool {
+	if s.password() != "" || s.origPassFile == "" || target == "" || target == s.origPassFile {
+		return false
+	}
+	_, err := os.Stat(config.ExpandRoot(target))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
 // probePasswordFile resolves a password file to authenticate the connection
-// check with, without touching the server's real managed file. A typed password
-// is written to a private temp file (removed by the returned cleanup); a blank
-// password reuses the file the server already points at (its Password file field
-// value, or the default managed location for the name). The cleanup is always
-// safe to call.
+// check with, without touching the server's real files. A typed password is
+// written to a private temp file (removed by the returned cleanup); a blank
+// password probes the file the server will use after save — the original file
+// when save is going to move it (see movesPassFile). "" means no password file.
+// The cleanup is always safe to call.
 func (s serverFormModel) probePasswordFile() (string, func(), error) {
 	noop := func() {}
 	if pw := s.password(); pw != "" {
@@ -131,12 +163,29 @@ func (s serverFormModel) probePasswordFile() (string, func(), error) {
 		}
 		return path, cleanup, nil
 	}
-	name, srv := s.values()
-	path := srv.PasswordFile
-	if path == "" {
-		path = config.ServerPasswordPath(s.configPath, name)
+	path := s.passFileTarget()
+	if s.movesPassFile(path) {
+		path = s.origPassFile
 	}
 	return config.ExpandRoot(path), noop, nil
+}
+
+// passFileInUse reports whether any config entry other than server still points
+// at the password file path — another server, or a profile's own
+// rsyncd_password_file — so it must not be moved or removed from under it.
+func passFileInUse(cfg *config.Config, server, path string) bool {
+	path = config.ExpandRoot(path)
+	for name, srv := range cfg.Servers {
+		if name != server && config.ExpandRoot(srv.PasswordFile) == path {
+			return true
+		}
+	}
+	for _, p := range cfg.Profiles {
+		if config.ExpandRoot(p.RsyncdPasswordFile) == path {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshPassFilePlaceholder sets the Password file field's greyed placeholder
