@@ -39,18 +39,16 @@ func sanitizeFilename(name string) string {
 }
 
 // WriteServerPassword writes secret to path as an rsync daemon password file:
-// the parent directory is created mode 0700 and the file is written mode 0600
-// with the secret on a single line. rsync's --password-file expects exactly the
+// the parent directory is created mode 0700 and the file is written atomically
+// mode 0600 — replacing any file already there, whatever its permissions — with
+// the secret on a single line. rsync's --password-file expects exactly the
 // password (no username), so the file holds just that, newline-terminated.
 func WriteServerPassword(path, secret string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(secret+"\n"), 0o600)
+	return writeFileAtomic(path, []byte(secret+"\n"))
 }
 
 // MovePasswordFile relocates the password file at from to to, creating to's
-// parent mode 0700 and overwriting any file already at to. With keep set the
+// parent mode 0700 and replacing any file already at to. With keep set the
 // file is copied and from stays in place (something else still uses it). A
 // plain rename is tried first; across filesystems it falls back to a 0600 copy
 // followed by removing from.
@@ -61,11 +59,11 @@ func MovePasswordFile(from, to string, keep bool) error {
 	if !keep && os.Rename(from, to) == nil {
 		return nil
 	}
-	data, err := os.ReadFile(from)
+	data, err := os.ReadFile(from) //nolint:gosec // G304: from is the password-file path the user configured for the server; no trust boundary is crossed.
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(to, data, 0o600); err != nil {
+	if err := writeFileAtomic(to, data); err != nil {
 		return err
 	}
 	if keep {

@@ -56,7 +56,7 @@ func (s *Syncer) CheckConnection(ctx context.Context, d Daemon) error {
 // password file before it is sent: the file must be readable and, as rsync
 // demands, not accessible to other users.
 func checkPasswordFile(path string) error {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path is the caller-configured Daemon.PasswordFile, not untrusted input.
 	if err != nil {
 		return fmt.Errorf("password file: %w", err)
 	}
