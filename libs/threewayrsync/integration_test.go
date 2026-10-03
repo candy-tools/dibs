@@ -914,8 +914,13 @@ func TestIntegrationListDirsAuthModule(t *testing.T) {
 		t.Fatal("ListDirs on an auth module without credentials must error")
 	}
 
-	// The right user + password file succeeds.
-	pw := filepath.Join(t.TempDir(), "pw")
+	// The right user + password file succeeds, even from a path with a space (the
+	// macOS default lives under "Library/Application Support").
+	pwDir := filepath.Join(t.TempDir(), "Application Support")
+	if err := os.MkdirAll(pwDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pw := filepath.Join(pwDir, "pw")
 	writeFile(t, pw, "s3cret\n")
 	if err := os.Chmod(pw, 0o600); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,8 @@ package threewayrsync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 )
 
@@ -20,7 +22,16 @@ import (
 // probes every advertised module rather than one specific target. It cannot
 // validate a password against a module that requires no auth (rsync only sends
 // the password when the daemon challenges for it).
+//
+// A configured PasswordFile is checked up front, before any daemon is contacted:
+// rsync reports an unreadable one only per module, with an error the per-module
+// loop would otherwise ignore. A missing file wraps fs.ErrNotExist.
 func (s *Syncer) CheckConnection(ctx context.Context, d Daemon) error {
+	if d.PasswordFile != "" {
+		if err := checkPasswordFile(d.PasswordFile); err != nil {
+			return err
+		}
+	}
 	d.Module = ""
 	mods, err := s.ListModules(ctx, d)
 	if err != nil {
@@ -37,6 +48,28 @@ func (s *Syncer) CheckConnection(ctx context.Context, d Daemon) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// checkPasswordFile applies the client-side checks rsync makes on a daemon
+// password file before it is sent: the file must be readable and, as rsync
+// demands, not accessible to other users.
+func checkPasswordFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("password file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("password file: %w", err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("password file %s is a directory", path)
+	}
+	if fi.Mode().Perm()&0o006 != 0 {
+		return fmt.Errorf("password file %s must not be accessible to other users (chmod 600)", path)
 	}
 	return nil
 }

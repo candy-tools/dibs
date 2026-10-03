@@ -64,3 +64,31 @@ func TestWriteServerPassword(t *testing.T) {
 		}
 	}
 }
+
+func TestMovePasswordFile(t *testing.T) {
+	for name, keep := range map[string]bool{"move": false, "copy": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			from := filepath.Join(dir, "old.pw")
+			to := filepath.Join(dir, "new dir", "new.pw")
+			if err := config.WriteServerPassword(from, "s3cret"); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.MovePasswordFile(from, to, keep); err != nil {
+				t.Fatalf("MovePasswordFile: %v", err)
+			}
+			if data, err := os.ReadFile(to); err != nil || string(data) != "s3cret\n" {
+				t.Fatalf("destination content = %q err=%v", string(data), err)
+			}
+			if _, err := os.Stat(from); keep != (err == nil) {
+				t.Fatalf("source exists = %v, want %v", err == nil, keep)
+			}
+		})
+	}
+
+	// A missing source is an error, not a silent no-op.
+	dir := t.TempDir()
+	if err := config.MovePasswordFile(filepath.Join(dir, "nope"), filepath.Join(dir, "to"), false); !os.IsNotExist(err) {
+		t.Fatalf("missing source: err = %v, want not-exist", err)
+	}
+}

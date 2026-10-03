@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/candy-tools/dibs/internal/config"
@@ -60,6 +63,130 @@ func TestSubmitServerBlankPasswordKeepsFile(t *testing.T) {
 	data, err := os.ReadFile(pwPath)
 	if err != nil || string(data) != "original\n" {
 		t.Fatalf("password file changed: data=%q err=%v", string(data), err)
+	}
+}
+
+// TestChangePassFileMovesFile: pointing the Password file field somewhere new
+// without retyping the password moves the existing file there; the connection
+// check probes the original file, since that is what save will move.
+func TestChangePassFileMovesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	oldPw := config.ServerPasswordPath(path, "nas")
+	if err := config.WriteServerPassword(oldPw, "sec"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Servers:  map[string]config.Server{"nas": {Host: "h", PasswordFile: oldPw}},
+		Profiles: map[string]config.Profile{},
+	}
+	m := newModel(path, cfg)
+	m.serverForm = newServerForm("nas", cfg.Servers["nas"], path)
+	newPw := filepath.Join(dir, "elsewhere", "nas.pw")
+	setServerFormFields(&m.serverForm, "nas", "h", "", "", "", newPw)
+
+	if probe, _, err := m.serverForm.probePasswordFile(); err != nil || probe != oldPw {
+		t.Fatalf("probe = %q err=%v, want the original file %q", probe, err, oldPw)
+	}
+	if _, _ = m.finalizeServerSave(); m.serverForm.err != "" {
+		t.Fatalf("submit error: %s", m.serverForm.err)
+	}
+	if _, err := os.Stat(oldPw); !os.IsNotExist(err) {
+		t.Fatal("old password file was not moved")
+	}
+	if data, err := os.ReadFile(newPw); err != nil || string(data) != "sec\n" {
+		t.Fatalf("moved file content = %q err=%v", string(data), err)
+	}
+	if got := cfg.Servers["nas"].PasswordFile; got != newPw {
+		t.Fatalf("PasswordFile = %q, want %q", got, newPw)
+	}
+}
+
+// TestChangePassFileCopiesSharedFile: when a profile still uses the old file it
+// is copied to the new location rather than moved out from under the profile.
+func TestChangePassFileCopiesSharedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	oldPw := filepath.Join(dir, "shared.pw")
+	if err := config.WriteServerPassword(oldPw, "sec"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Servers:  map[string]config.Server{"nas": {Host: "h", PasswordFile: oldPw}},
+		Profiles: map[string]config.Profile{"p": {RsyncdPasswordFile: oldPw}},
+	}
+	m := newModel(path, cfg)
+	m.serverForm = newServerForm("nas", cfg.Servers["nas"], path)
+	newPw := filepath.Join(dir, "nas.pw")
+	setServerFormFields(&m.serverForm, "nas", "h", "", "", "", newPw)
+
+	if _, _ = m.finalizeServerSave(); m.serverForm.err != "" {
+		t.Fatalf("submit error: %s", m.serverForm.err)
+	}
+	for _, p := range []string{oldPw, newPw} {
+		if data, err := os.ReadFile(p); err != nil || string(data) != "sec\n" {
+			t.Fatalf("%s content = %q err=%v", p, string(data), err)
+		}
+	}
+}
+
+// TestChangePassFileToExistingFile: pointing at a file that already exists uses
+// it as-is and leaves the old file alone.
+func TestChangePassFileToExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	oldPw := config.ServerPasswordPath(path, "nas")
+	existing := filepath.Join(dir, "existing.pw")
+	for p, secret := range map[string]string{oldPw: "old", existing: "existing"} {
+		if err := config.WriteServerPassword(p, secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{
+		Servers:  map[string]config.Server{"nas": {Host: "h", PasswordFile: oldPw}},
+		Profiles: map[string]config.Profile{},
+	}
+	m := newModel(path, cfg)
+	m.serverForm = newServerForm("nas", cfg.Servers["nas"], path)
+	setServerFormFields(&m.serverForm, "nas", "h", "", "", "", existing)
+
+	if probe, _, _ := m.serverForm.probePasswordFile(); probe != existing {
+		t.Fatalf("probe = %q, want %q", probe, existing)
+	}
+	if _, _ = m.finalizeServerSave(); m.serverForm.err != "" {
+		t.Fatalf("submit error: %s", m.serverForm.err)
+	}
+	for p, want := range map[string]string{oldPw: "old\n", existing: "existing\n"} {
+		if data, err := os.ReadFile(p); err != nil || string(data) != want {
+			t.Fatalf("%s content = %q err=%v, want %q", p, string(data), err, want)
+		}
+	}
+}
+
+// TestProbeNoPasswordFile: a server with neither a password nor a password file
+// is probed without one — matching what save persists.
+func TestProbeNoPasswordFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	s := newServerForm("", config.Server{}, path)
+	setServerFormFields(&s, "nas", "h", "", "", "", "")
+	if probe, _, err := s.probePasswordFile(); err != nil || probe != "" {
+		t.Fatalf("probe = %q err=%v, want no password file", probe, err)
+	}
+}
+
+// TestMissingPassFileHint: a connection check failing on a missing password file
+// keeps the form open and tells the user how to create it.
+func TestMissingPassFileHint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	m := newModel(path, &config.Config{Servers: map[string]config.Server{}, Profiles: map[string]config.Profile{}})
+	m.serverForm = newServerForm("", config.Server{}, path)
+	m.serverForm.checking = true
+	m.serverForm.checkSeq = 1
+
+	res := serverCheckResultMsg{seq: 1, err: fmt.Errorf("password file: %w", fs.ErrNotExist)}
+	got, _ := m.applyServerCheckResult(res)
+	if msg := got.(model).serverForm.err; !strings.Contains(msg, "type the password to create it") {
+		t.Fatalf("form error = %q, want the create-it hint", msg)
 	}
 }
 

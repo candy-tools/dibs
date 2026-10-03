@@ -48,3 +48,28 @@ func WriteServerPassword(path, secret string) error {
 	}
 	return os.WriteFile(path, []byte(secret+"\n"), 0o600)
 }
+
+// MovePasswordFile relocates the password file at from to to, creating to's
+// parent mode 0700 and overwriting any file already at to. With keep set the
+// file is copied and from stays in place (something else still uses it). A
+// plain rename is tried first; across filesystems it falls back to a 0600 copy
+// followed by removing from.
+func MovePasswordFile(from, to string, keep bool) error {
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return err
+	}
+	if !keep && os.Rename(from, to) == nil {
+		return nil
+	}
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(to, data, 0o600); err != nil {
+		return err
+	}
+	if keep {
+		return nil
+	}
+	return os.Remove(from)
+}

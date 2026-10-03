@@ -146,7 +146,15 @@ func validateDaemonFields(d *Daemon, requireModule bool) error {
 	if requireModule && strings.TrimSpace(d.Module) == "" {
 		return errors.New("daemon module is required")
 	}
-	for name, v := range map[string]string{"host": d.Host, "user": d.User, "module": d.Module, "password file": d.PasswordFile} {
+	// The password file may contain spaces (e.g. macOS "Application Support"): it is
+	// handed to rsync as a single exec argument, never through a shell or the URL.
+	if strings.HasPrefix(d.PasswordFile, "-") {
+		return errors.New("daemon password file must not start with '-'")
+	}
+	if strings.ContainsAny(d.PasswordFile, "\n\r") {
+		return errors.New("daemon password file must not contain line breaks")
+	}
+	for name, v := range map[string]string{"host": d.Host, "user": d.User, "module": d.Module} {
 		if strings.HasPrefix(v, "-") {
 			return errors.New("daemon " + name + " must not start with '-'")
 		}
